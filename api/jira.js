@@ -3,13 +3,6 @@ import { createDecipheriv, scryptSync } from "crypto";
 const COOKIE_NAME = "bpn_wrapped_session";
 const ALGORITHM = "aes-256-gcm";
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Content-Type": "application/json",
-};
-
 const MONTHS_ES = [
   "Enero","Febrero","Marzo","Abril","Mayo","Junio",
   "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre",
@@ -48,9 +41,16 @@ function getSession(req) {
     if (Date.now() > session.expiresAt) return null;
     return session;
   } catch (err) {
-    console.error("getSession decrypt error:", err.message);
+    console.error("getSession error:", err.message);
     return null;
   }
+}
+
+function json(res, status, body) {
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.statusCode = status;
+  res.end(JSON.stringify(body));
 }
 
 async function fetchAllIssues(accessToken, cloudId, year) {
@@ -114,8 +114,7 @@ function calculateMetrics(issues, year) {
   for (const issue of issues) {
     const type =
       issue.fields.customfield_10010?.requestType?.name ||
-      issue.fields.issuetype?.name ||
-      "Otro";
+      issue.fields.issuetype?.name || "Otro";
     typeCount[type] = (typeCount[type] || 0) + 1;
 
     const project = issue.fields.project?.name || "Sin proyecto";
@@ -170,30 +169,37 @@ function calculateMetrics(issues, year) {
 }
 
 export default async function handler(req, res) {
-  if (req.method === "OPTIONS") return res.status(204).set(CORS).end();
-  if (req.method !== "GET") return res.status(405).set(CORS).json({ error: "Method not allowed" });
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
+
+  if (req.method !== "GET") {
+    return json(res, 405, { error: "Method not allowed" });
+  }
 
   const session = getSession(req);
   if (!session) {
-    return res.status(401).set(CORS).json({
-      error: "unauthenticated",
-      message: "Sesion no encontrada o expirada.",
-    });
+    return json(res, 401, { error: "unauthenticated", message: "Sesion no encontrada o expirada." });
   }
 
   const year = parseInt(req.query.year || String(new Date().getFullYear() - 1), 10);
   if (isNaN(year) || year < 2020 || year > new Date().getFullYear() + 1) {
-    return res.status(400).set(CORS).json({ error: "invalid year" });
+    return json(res, 400, { error: "invalid year" });
   }
 
   try {
-    console.log(`Fetching issues for ${session.user.email}, year ${year}, cloudId ${session.cloudId}`);
+    console.log(`Fetching issues for ${session.user.email}, year ${year}`);
     const issues = await fetchAllIssues(session.accessToken, session.cloudId, year);
     console.log(`Found ${issues.length} issues`);
     const metrics = calculateMetrics(issues, year);
-    return res.status(200).set(CORS).json({ user: session.user, ...metrics });
+    return json(res, 200, { user: session.user, ...metrics });
   } catch (err) {
     console.error("Jira error:", err.message);
-    return res.status(500).set(CORS).json({ error: "jira_error", message: err.message });
+    return json(res, 500, { error: "jira_error", message: err.message });
   }
 }

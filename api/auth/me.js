@@ -20,43 +20,48 @@ function parseCookies(req) {
   for (const part of raw.split(";")) {
     const idx = part.indexOf("=");
     if (idx < 0) continue;
-    const key = part.slice(0, idx).trim();
-    const val = part.slice(idx + 1).trim();
-    result[key] = val;
+    result[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
   }
   return result;
 }
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Content-Type": "application/json",
-};
+function json(res, status, body) {
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.statusCode = status;
+  res.end(JSON.stringify(body));
+}
 
 export default function handler(req, res) {
-  if (req.method === "OPTIONS") return res.status(204).set(CORS).end();
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
 
   const { COOKIE_SECRET } = process.env;
   if (!COOKIE_SECRET) {
-    return res.status(500).set(CORS).json({ error: "server_misconfigured" });
+    return json(res, 500, { error: "server_misconfigured" });
   }
 
   const cookies = parseCookies(req);
   const raw = cookies[COOKIE_NAME];
 
   if (!raw) {
-    return res.status(401).set(CORS).json({ error: "no_session" });
+    return json(res, 401, { error: "no_session" });
   }
 
   try {
     const session = JSON.parse(decrypt(raw, COOKIE_SECRET));
     if (Date.now() > session.expiresAt) {
-      return res.status(401).set(CORS).json({ error: "session_expired" });
+      return json(res, 401, { error: "session_expired" });
     }
-    return res.status(200).set(CORS).json({ user: session.user });
+    return json(res, 200, { user: session.user });
   } catch (err) {
     console.error("me.js decrypt error:", err.message);
-    return res.status(401).set(CORS).json({ error: "invalid_session" });
+    return json(res, 401, { error: "invalid_session" });
   }
 }
