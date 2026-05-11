@@ -12,28 +12,38 @@ function encrypt(text, secret) {
   return Buffer.concat([iv, tag, encrypted]).toString("base64url");
 }
 
+function redirect(res, url) {
+  res.writeHead(302, { Location: url });
+  res.end();
+}
+
 export default async function handler(req, res) {
   const { ATLASSIAN_CLIENT_ID, ATLASSIAN_CLIENT_SECRET, APP_URL, COOKIE_SECRET } = process.env;
 
   if (!ATLASSIAN_CLIENT_ID || !ATLASSIAN_CLIENT_SECRET || !APP_URL || !COOKIE_SECRET) {
-    console.error("Missing env vars");
-    return res.redirect(302, `${APP_URL || "/"}?error=server_misconfigured`);
+    console.error("Missing env vars:", { ATLASSIAN_CLIENT_ID: !!ATLASSIAN_CLIENT_ID, ATLASSIAN_CLIENT_SECRET: !!ATLASSIAN_CLIENT_SECRET, APP_URL: !!APP_URL, COOKIE_SECRET: !!COOKIE_SECRET });
+    redirect(res, `${APP_URL || "/"}?error=server_misconfigured`);
+    return;
   }
 
-  const { code, error } = req.query;
+  const url = new URL(req.url, APP_URL);
+  const code = url.searchParams.get("code");
+  const error = url.searchParams.get("error");
 
   if (error) {
-    return res.redirect(302, `${APP_URL}?error=${encodeURIComponent(error)}`);
+    redirect(res, `${APP_URL}?error=${encodeURIComponent(error)}`);
+    return;
   }
 
   if (!code) {
-    return res.redirect(302, `${APP_URL}?error=missing_code`);
+    redirect(res, `${APP_URL}?error=missing_code`);
+    return;
   }
 
   const redirectUri = `${APP_URL}/api/auth/callback`;
 
   try {
-    // 1. Intercambiar code por tokens
+    console.log("Exchanging code for tokens...");
     const tokenRes = await fetch("https://auth.atlassian.com/oauth/token", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -48,14 +58,15 @@ export default async function handler(req, res) {
 
     if (!tokenRes.ok) {
       const err = await tokenRes.text();
-      console.error("Token exchange failed:", err);
-      return res.redirect(302, `${APP_URL}?error=token_exchange_failed`);
+      console.error("Token exchange failed:", tokenRes.status, err);
+      redirect(res, `${APP_URL}?error=token_exchange_failed`);
+      return;
     }
 
     const tokens = await tokenRes.json();
-    console.log("Tokens obtained, expires_in:", tokens.expires_in);
+    console.log("Tokens OK, expires_in:", tokens.expires_in);
 
-    // 2. Obtener cloudId
+    console.log("Fetching accessible resources...");
     const resourcesRes = await fetch("https://api.atlassian.com/oauth/token/accessible-resources", {
       headers: {
         Authorization: `Bearer ${tokens.access_token}`,
@@ -64,20 +75,22 @@ export default async function handler(req, res) {
     });
 
     if (!resourcesRes.ok) {
-      console.error("Resources failed:", await resourcesRes.text());
-      return res.redirect(302, `${APP_URL}?error=no_resources`);
+      console.error("Resources failed:", resourcesRes.status);
+      redirect(res, `${APP_URL}?error=no_resources`);
+      return;
     }
 
     const resources = await resourcesRes.json();
-    console.log("Resources count:", resources.length);
+    console.log("Resources:", resources.length, resources.map(r => r.name));
 
     if (!resources.length) {
-      return res.redirect(302, `${APP_URL}?error=no_jira_sites`);
+      redirect(res, `${APP_URL}?error=no_jira_sites`);
+      return;
     }
 
     const { id: cloudId } = resources[0];
 
-    // 3. Datos del usuario
+    console.log("Fetching user info, cloudId:", cloudId);
     const myselfRes = await fetch(
       `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/myself`,
       {
@@ -89,14 +102,14 @@ export default async function handler(req, res) {
     );
 
     if (!myselfRes.ok) {
-      console.error("Myself failed:", await myselfRes.text());
-      return res.redirect(302, `${APP_URL}?error=user_fetch_failed`);
+      console.error("Myself failed:", myselfRes.status);
+      redirect(res, `${APP_URL}?error=user_fetch_failed`);
+      return;
     }
 
     const myself = await myselfRes.json();
-    console.log("User:", myself.emailAddress);
+    console.log("User OK:", myself.emailAddress);
 
-    // 4. Cifrar sesion en cookie HttpOnly
     const expiresAt = Date.now() + (tokens.expires_in || 3600) * 1000;
     const session = JSON.stringify({
       accessToken: tokens.access_token,
@@ -112,16 +125,16 @@ export default async function handler(req, res) {
     });
 
     const encrypted = encrypt(session, COOKIE_SECRET);
-    console.log("Session encrypted, length:", encrypted.length);
+    console.log("Session encrypted OK, length:", encrypted.length);
 
-    res.setHeader("Set-Cookie", [
-      `${COOKIE_NAME}=${encrypted}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=28800`,
-    ]);
+    res.writeHead(302, {
+      Location: `${APP_URL}?auth=success`,
+      "Set-Cookie": `${COOKIE_NAME}=${encrypted}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=28800`,
+    });
+    res.end();
 
-    return res.redirect(302, `${APP_URL}?auth=success`);
   } catch (err) {
-    console.error("OAuth callback error:", err.message);
-    return res.redirect(302, `${APP_URL}?error=internal_error`);
+    console.error("OAuth callback exception:", err.message, err.stack);
+    redirect(res, `${APP_URL}?error=internal_error`);
   }
 }
- 
