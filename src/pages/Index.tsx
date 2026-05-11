@@ -14,13 +14,21 @@ const Index = () => {
     if (error) toast.error(error);
   }, [error]);
 
+  // Limpiar query params del URL sin recargar
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("auth") || params.has("error")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
+
   // Verificando sesion inicial
   if (authLoading) return <LoadingScreen />;
 
   // Sin sesion: mostrar login
   if (!user) return <LoginForm />;
 
-  // Sesion activa pero cargando datos
+  // Sesion activa pero cargando datos de Jira
   if (dataLoading || !data) return <LoadingScreen />;
 
   return (

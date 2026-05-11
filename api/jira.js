@@ -1,15 +1,4 @@
-/**
- * GET /api/jira?year=2024
- * Lee la sesión OAuth desde la cookie cifrada y consulta la API de Jira
- * con el access_token del usuario. Nadie puede ver datos de otro usuario
- * porque Jira filtra por `reporter = currentUser()`.
- *
- * Variables de entorno:
- *   COOKIE_SECRET     → mismo valor que en auth/callback.js
- *   JIRA_PROJECTS     → claves separadas por coma (opcional)
- */
-
-import crypto from "crypto";
+import { createDecipheriv, scryptSync } from "crypto";
 
 const COOKIE_NAME = "bpn_wrapped_session";
 const ALGORITHM = "aes-256-gcm";
@@ -27,24 +16,25 @@ const MONTHS_ES = [
 ];
 
 function decrypt(encoded, secret) {
-  const key = crypto.scryptSync(secret, "bpn_wrapped_salt", 32);
+  const key = scryptSync(secret, "bpn_wrapped_salt", 32);
   const buf = Buffer.from(encoded, "base64url");
   const iv = buf.subarray(0, 12);
   const tag = buf.subarray(12, 28);
   const data = buf.subarray(28);
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+  const decipher = createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(tag);
   return decipher.update(data) + decipher.final("utf8");
 }
 
 function parseCookies(req) {
   const raw = req.headers.cookie || "";
-  return Object.fromEntries(
-    raw.split(";").map((c) => {
-      const idx = c.indexOf("=");
-      return [c.slice(0, idx).trim(), c.slice(idx + 1).trim()];
-    })
-  );
+  const result = {};
+  for (const part of raw.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx < 0) continue;
+    result[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
+  }
+  return result;
 }
 
 function getSession(req) {
@@ -57,7 +47,8 @@ function getSession(req) {
     const session = JSON.parse(decrypt(raw, COOKIE_SECRET));
     if (Date.now() > session.expiresAt) return null;
     return session;
-  } catch {
+  } catch (err) {
+    console.error("getSession decrypt error:", err.message);
     return null;
   }
 }
@@ -159,7 +150,7 @@ function calculateMetrics(issues, year) {
     ? Math.round((totalResolutionMs / resolvedCount / 3_600_000) * 10) / 10 : 0;
   const firstContactRate = resolvedCount > 0
     ? Math.round((quickResolves / resolvedCount) * 100) : 0;
-  const DAYS_ES = ["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
+  const DAYS_ES = ["Domingo","Lunes","Martes","Miercoles","Jueves","Viernes","Sabado"];
   const peakWeekday = DAYS_ES[weekdayCount.indexOf(Math.max(...weekdayCount))];
   const activeMonths = monthlyCount.filter((c) => c > 0).length || 1;
 
@@ -186,7 +177,7 @@ export default async function handler(req, res) {
   if (!session) {
     return res.status(401).set(CORS).json({
       error: "unauthenticated",
-      message: "Sesión no encontrada o expirada.",
+      message: "Sesion no encontrada o expirada.",
     });
   }
 
@@ -196,7 +187,9 @@ export default async function handler(req, res) {
   }
 
   try {
+    console.log(`Fetching issues for ${session.user.email}, year ${year}, cloudId ${session.cloudId}`);
     const issues = await fetchAllIssues(session.accessToken, session.cloudId, year);
+    console.log(`Found ${issues.length} issues`);
     const metrics = calculateMetrics(issues, year);
     return res.status(200).set(CORS).json({ user: session.user, ...metrics });
   } catch (err) {
