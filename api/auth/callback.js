@@ -124,3 +124,4 @@ export default async function handler(req, res) {
     return res.redirect(302, `${APP_URL}?error=internal_error`);
   }
 }
+ 
